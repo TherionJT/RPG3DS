@@ -1,4 +1,5 @@
 main.o: C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/source/main.c \
+ C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/juego.h \
  C:/devkitPro/libctru/include/3ds.h \
  C:/devkitPro/libctru/include/3ds/types.h \
  C:/devkitPro/libctru/include/3ds/result.h \
@@ -108,7 +109,15 @@ main.o: C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/source/main.c \
  C:/devkitPro/libctru/include/c2d/spritesheet.h \
  C:/devkitPro/libctru/include/c2d/sprite.h \
  C:/devkitPro/libctru/include/c2d/text.h \
- C:/devkitPro/libctru/include/c2d/font.h
+ C:/devkitPro/libctru/include/c2d/font.h \
+ C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/combate.h \
+ C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/juego.h \
+ C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/audio.h \
+ C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/ui_core.h \
+ C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/ui_mapa.h \
+ C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/ui_combate.h \
+ C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/ui_modales.h
+C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/juego.h:
 C:/devkitPro/libctru/include/3ds.h:
 C:/devkitPro/libctru/include/3ds/types.h:
 C:/devkitPro/libctru/include/3ds/result.h:
@@ -219,3 +228,10 @@ C:/devkitPro/libctru/include/c2d/spritesheet.h:
 C:/devkitPro/libctru/include/c2d/sprite.h:
 C:/devkitPro/libctru/include/c2d/text.h:
 C:/devkitPro/libctru/include/c2d/font.h:
+C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/combate.h:
+C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/juego.h:
+C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/audio.h:
+C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/ui_core.h:
+C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/ui_mapa.h:
+C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/ui_combate.h:
+C:/Users/morap/OneDrive/Desktop/Rpg3ds/RPG/include/ui_modales.h:
