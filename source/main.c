@@ -4,8 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
+
+#include "personaje_t3x.h" // Hoja de sprites del personaje (gfx/personaje.t3s)
 
 typedef enum {
+    ESTADO_PERSONALIZACION,
     ESTADO_EXPLORACION,
     ESTADO_COMBATE
 } EstadoJuego;
@@ -20,11 +24,158 @@ typedef struct {
 } Entidad;
 
 // Función auxiliar para dibujar texto dinámico con la fuente del sistema de 3DS
+// El simbolo '¡' se dibuja a mano porque la fuente compartida de Azahar no lo incluye.
 void dibujarTexto(C2D_TextBuf buf, float x, float y, float escala, u32 color, const char* str) {
-    C2D_Text text;
-    C2D_TextParse(&text, buf, str);
-    C2D_TextOptimize(&text);
-    C2D_DrawText(&text, C2D_WithColor, x, y, 0.0f, escala, escala, color);
+    const char* p = str;
+    char seg[128];
+    while (*p) {
+        const char* q = strstr(p, "¡");
+        size_t n = q ? (size_t)(q - p) : strlen(p);
+        if (n > 0) {
+            size_t c = n < sizeof(seg) - 1 ? n : sizeof(seg) - 1;
+            memcpy(seg, p, c);
+            seg[c] = '\0';
+            C2D_Text text;
+            C2D_TextParse(&text, buf, seg);
+            C2D_TextOptimize(&text);
+            C2D_DrawText(&text, C2D_WithColor, x, y, 0.0f, escala, escala, color);
+            float ancho = 0.0f;
+            C2D_TextGetDimensions(&text, escala, escala, &ancho, NULL);
+            x += ancho;
+        }
+        if (!q) break;
+        // '¡' = punto arriba + barra debajo
+        float h = 30.0f * escala;
+        float g = roundf(h * 0.11f); if (g < 1.0f) g = 1.0f;
+        float gx = roundf(x + h * 0.08f);
+        C2D_DrawRectSolid(gx, roundf(y + h * 0.30f), 0.0f, g, g, color);
+        C2D_DrawRectSolid(gx, roundf(y + h * 0.30f) + 2 * g, 0.0f, g, roundf(h * 0.42f), color);
+        x += g + h * 0.2f;
+        p = q + strlen("¡");
+    }
+}
+
+// ==========================================
+// PERSONAJE POR CAPAS (sprite base 32x32)
+// ==========================================
+// Orden de las imagenes dentro de personaje.t3s: 8 direcciones x 3 cuadros x 9 capas.
+// Las capas en gris se colorean en el juego con un tinte multiplicativo.
+#define PJ_TAM            32
+#define PJ_CAPAS_X_CUADRO 9
+#define PJ_CUADROS_X_DIR  9   // 0 = quieto, 1..8 = ciclo de caminata
+#define NUM_DIRS          8
+// Direcciones en el mismo orden que la hoja (sentido horario empezando mirando abajo)
+enum { DIR_S = 0, DIR_SO, DIR_O, DIR_NO, DIR_N, DIR_NE, DIR_E, DIR_SE };
+enum {
+    CAPA_PIERNAS = 0, CAPA_CUERPO, CAPA_CARA,
+    CAPA_ROPA_0,          // + estilo de ropa (0..2)
+    CAPA_PELO_0 = 6       // + peinado (0..2)
+};
+enum { CUADRO_QUIETO = 0, CUADRO_CAMINATA_0 = 1 };
+#define CUADROS_CAMINATA 8      // contacto, baja, paso, sube (x2 pies)
+
+// Movimiento suave en el mapa
+#define VEL_MAX       1.5f      // px por frame a velocidad crucero
+#define ACELERACION   0.25f     // px/frame^2 al arrancar (~6 frames hasta crucero)
+#define FRENADO       0.35f     // px/frame^2 al soltar
+#define PX_POR_CUADRO 3.5f      // la animacion avanza segun la distancia recorrida (sin patinar)
+#define FRAMES_X_GIRO 3         // frames por cada paso de 45 grados al girar
+
+#define NUM_PIELES       5
+#define NUM_PEINADOS     3
+#define NUM_COLORES_PELO 8
+#define NUM_ROPAS        3
+#define NUM_COLORES_ROPA 8
+#define NUM_NOMBRES      6
+
+typedef struct { const char* nombre; u8 r, g, b; } ColorNombrado;
+
+static const ColorNombrado PIELES[NUM_PIELES] = {
+    {"Clara", 255, 219, 180}, {"Media", 240, 188, 148}, {"Trigueña", 200, 140, 100},
+    {"Morena", 150, 100, 70}, {"Oscura", 105, 70, 50}
+};
+static const ColorNombrado COLORES_PELO[NUM_COLORES_PELO] = {
+    {"Castaño", 120, 72, 40}, {"Negro", 48, 44, 56}, {"Rubio", 250, 210, 90},
+    {"Pelirrojo", 205, 85, 40}, {"Blanco", 235, 235, 240}, {"Azul", 70, 110, 230},
+    {"Rosa", 240, 120, 180}, {"Verde", 80, 180, 90}
+};
+static const ColorNombrado COLORES_ROPA[NUM_COLORES_ROPA] = {
+    {"Azul", 60, 110, 220}, {"Rojo", 200, 50, 50}, {"Verde", 60, 160, 80},
+    {"Morado", 130, 70, 200}, {"Plata", 205, 205, 215}, {"Negro", 70, 70, 80},
+    {"Dorado", 230, 190, 60}, {"Marrón", 140, 90, 50}
+};
+static const char* PEINADOS[NUM_PEINADOS] = {"Corto", "Largo", "En puntas"};
+static const char* ROPAS[NUM_ROPAS]       = {"Túnica", "Armadura", "Toga de mago"};
+static const char* NOMBRES[NUM_NOMBRES]   = {"Heroe", "Aria", "Kael", "Luna", "Ren", "Sol"};
+
+typedef struct {
+    int piel, peinado, colorPelo, ropa, colorRopa;
+} Apariencia;
+
+static u32 colorDe(const ColorNombrado* c) { return C2D_Color32(c->r, c->g, c->b, 255); }
+
+static void dibujarCapa(C2D_SpriteSheet hoja, int dir, int cuadro, int capa, float x, float y, float escala, const C2D_ImageTint* tinte) {
+    C2D_Image img = C2D_SpriteSheetGetImage(hoja, (dir * PJ_CUADROS_X_DIR + cuadro) * PJ_CAPAS_X_CUADRO + capa);
+    C2D_DrawImageAt(img, x, y, 0.5f, tinte, escala, escala);
+}
+
+// Dibuja el personaje completo (esquina superior izquierda en x,y). Usar escalas enteras.
+static void dibujarPersonaje(C2D_SpriteSheet hoja, const Apariencia* ap, int dir, int cuadro, float x, float y, float escala) {
+    C2D_ImageTint tPiel, tPelo, tRopa;
+    C2D_PlainImageTint(&tPiel, colorDe(&PIELES[ap->piel]), 1.0f);
+    C2D_PlainImageTint(&tPelo, colorDe(&COLORES_PELO[ap->colorPelo]), 1.0f);
+    C2D_PlainImageTint(&tRopa, colorDe(&COLORES_ROPA[ap->colorRopa]), 1.0f);
+
+    x = floorf(x + 0.5f); y = floorf(y + 0.5f); // posicion subpixel -> pixel entero (sin parpadeo)
+    C2D_SetTintMode(C2D_TintMult);
+    dibujarCapa(hoja, dir, cuadro, CAPA_PIERNAS, x, y, escala, NULL);
+    dibujarCapa(hoja, dir, cuadro, CAPA_CUERPO, x, y, escala, &tPiel);
+    dibujarCapa(hoja, dir, cuadro, CAPA_ROPA_0 + ap->ropa, x, y, escala, &tRopa);
+    dibujarCapa(hoja, dir, cuadro, CAPA_CARA, x, y, escala, NULL);
+    dibujarCapa(hoja, dir, cuadro, CAPA_PELO_0 + ap->peinado, x, y, escala, &tPelo);
+    C2D_SetTintMode(C2D_TintSolid);
+}
+
+// Ciclo de caminata: quieto, paso izq, quieto, paso der
+static int cuadroPorDistancia(float distancia) {
+    return CUADRO_CAMINATA_0 + ((int)(distancia / PX_POR_CUADRO)) % CUADROS_CAMINATA;
+}
+
+// Acerca v a objetivo como maximo 'paso' (aceleracion/frenado lineal)
+static float acercar(float v, float objetivo, float paso) {
+    if (v < objetivo) return (v + paso > objetivo) ? objetivo : v + paso;
+    return (v - paso < objetivo) ? objetivo : v - paso;
+}
+
+// Direccion a partir del D-Pad (dx, dy en -1..1). Devuelve -1 si no hay movimiento.
+static int direccionDesde(int dx, int dy) {
+    static const int tabla[3][3] = {
+        {DIR_NO, DIR_N, DIR_NE},   // dy = -1 (arriba)
+        {DIR_O,  -1,    DIR_E },   // dy =  0
+        {DIR_SO, DIR_S, DIR_SE}    // dy = +1 (abajo)
+    };
+    return tabla[dy + 1][dx + 1];
+}
+
+static int ciclar(int valor, int delta, int total) { return (valor + delta + total) % total; }
+
+// Marco con borde (estilo de la UI existente)
+static void dibujarPanel(float x, float y, float w, float h, u32 borde, u32 fondo) {
+    C2D_DrawRectSolid(x, y, 0.0f, w, h, borde);
+    C2D_DrawRectSolid(x + 2, y + 2, 0.0f, w - 4, h - 4, fondo);
+}
+
+static void pedirNombre(char* destino, size_t tam) {
+    SwkbdState swkbd;
+    char buf[16];
+    swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, 12);
+    swkbdSetHintText(&swkbd, "Nombre del heroe");
+    swkbdSetInitialText(&swkbd, destino);
+    swkbdSetValidation(&swkbd, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
+    if (swkbdInputText(&swkbd, buf, sizeof(buf)) == SWKBD_BUTTON_CONFIRM) {
+        strncpy(destino, buf, tam - 1);
+        destino[tam - 1] = '\0';
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -32,6 +183,11 @@ int main(int argc, char* argv[]) {
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
     C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
     C2D_Prepare();
+
+    // Cargar la hoja de sprites del personaje y forzar filtrado "nearest" (pixel art nitido)
+    C2D_SpriteSheet hojaPJ = C2D_SpriteSheetLoadFromMem(personaje_t3x, personaje_t3x_size);
+    if (!hojaPJ) svcBreak(USERBREAK_PANIC);
+    C3D_TexSetFilter(C2D_SpriteSheetGetImage(hojaPJ, 0).tex, GPU_NEAREST, GPU_NEAREST);
 
     // Crear lienzos gráficos para AMBAS pantallas
     C3D_RenderTarget* top = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
@@ -42,7 +198,7 @@ int main(int argc, char* argv[]) {
 
     srand(time(NULL));
 
-    EstadoJuego estado = ESTADO_EXPLORACION;
+    EstadoJuego estado = ESTADO_PERSONALIZACION;
     Entidad jugador = {"Heroe", 100, 100, 18, 5, false};
     Entidad enemigo = {"Goblin", 55, 55, 16, 3, false};
 
@@ -50,13 +206,31 @@ int main(int argc, char* argv[]) {
     int contadorPasos = 0;
     int opcionMenu = 0; // 0: Atacar, 1: Defender, 2: Huir
 
+    // Personalizacion
+    Apariencia apariencia = {0, 0, 0, 0, 0};
+    int opcionPJ = 0;          // fila seleccionada en el menu de personalizacion
+    int indiceNombre = 0;
+    int contadorAnim = 0;      // reloj para animar la vista previa
+    float velX = 0.0f, velY = 0.0f; // velocidad actual (con aceleracion)
+    float distAnim = 0.0f;           // distancia recorrida en la caminata actual
+    int dirObjetivo = DIR_S;         // direccion pedida con el D-Pad
+    int framesGiro = 0;              // reloj del giro gradual
+    bool caminando = false;
+    int dirJugador = DIR_S;     // ultima direccion mirada (se conserva al detenerse)
+    int dirPreview = DIR_S;     // direccion de la vista previa
+    int esperaGiroManual = 0;   // tras L/R, pausa el giro automatico
+    int dirCandidata = DIR_S;   // evita perder la diagonal al soltar los dos botones
+    int framesCandidata = 0;
+    enum { OPC_NOMBRE, OPC_PIEL, OPC_PEINADO, OPC_COLOR_PELO, OPC_ROPA, OPC_COLOR_ROPA, OPC_COMENZAR, NUM_OPC };
+    const char* etiquetasPJ[NUM_OPC] = {"Nombre", "Piel", "Peinado", "Color de pelo", "Ropa", "Color de ropa", "COMENZAR"};
+    const float filaY0 = 34.0f, filaAlto = 25.0f;
+
     char logLinea1[64] = "Explora el mapa con el D-Pad.";
     char logLinea2[64] = "Los enemigos acechan en la hierba...";
 
     // Paleta de colores para la UI y el juego
     u32 clrPasto      = C2D_Color32(34, 139, 34, 255);
     u32 clrArena      = C2D_Color32(45, 30, 55, 255);
-    u32 clrJugador    = C2D_Color32(50, 150, 255, 255);
     u32 clrEnemigo    = C2D_Color32(220, 50, 50, 255);
     u32 clrVidaBg     = C2D_Color32(60, 20, 20, 255);
     u32 clrVida       = C2D_Color32(0, 220, 90, 255);
@@ -77,16 +251,112 @@ int main(int argc, char* argv[]) {
         u32 kHeld = hidKeysHeld();
 
         if (kDown & KEY_START) break;
+        contadorAnim++;
 
         // ==========================================
         // LÓGICA: MODO EXPLORACIÓN
         // ==========================================
-        if (estado == ESTADO_EXPLORACION) {
-            bool seMovio = false;
-            if (kHeld & KEY_RIGHT && playerX < 380) { playerX += 2.0f; seMovio = true; }
-            if (kHeld & KEY_LEFT  && playerX > 0)   { playerX -= 2.0f; seMovio = true; }
-            if (kHeld & KEY_DOWN  && playerY < 220) { playerY += 2.0f; seMovio = true; }
-            if (kHeld & KEY_UP    && playerY > 0)   { playerY -= 2.0f; seMovio = true; }
+        if (estado == ESTADO_PERSONALIZACION) {
+            if (kDown & KEY_UP)   opcionPJ = ciclar(opcionPJ, -1, NUM_OPC);
+            if (kDown & KEY_DOWN) opcionPJ = ciclar(opcionPJ, +1, NUM_OPC);
+
+            int delta = 0;
+            if (kDown & KEY_LEFT)  delta = -1;
+            if (kDown & KEY_RIGHT) delta = +1;
+            bool aceptar = (kDown & KEY_A);
+
+            // Pantalla tactil: tocar una fila la selecciona; las flechas cambian el valor
+            if (kDown & KEY_TOUCH) {
+                touchPosition t;
+                hidTouchRead(&t);
+                int fila = (int)((t.py - filaY0) / filaAlto);
+                if (t.py >= filaY0 && fila >= 0 && fila < NUM_OPC && t.px >= 8 && t.px <= 312) {
+                    opcionPJ = fila;
+                    if (fila == OPC_COMENZAR || (fila == OPC_NOMBRE && t.px > 185 && t.px < 270)) aceptar = true;
+                    else if (t.px >= 140 && t.px < 185) delta = -1;
+                    else if (t.px >= 270) delta = +1;
+                }
+            }
+
+            // L/R giran la vista previa; si no se tocan, gira sola
+            if (kDown & KEY_L) { dirPreview = ciclar(dirPreview, -1, NUM_DIRS); esperaGiroManual = 180; }
+            if (kDown & KEY_R) { dirPreview = ciclar(dirPreview, +1, NUM_DIRS); esperaGiroManual = 180; }
+            if (esperaGiroManual > 0) esperaGiroManual--;
+            else if (contadorAnim % 64 == 0) dirPreview = ciclar(dirPreview, +1, NUM_DIRS);
+
+            if (kDown & KEY_X) { // Aleatorio
+                apariencia.piel      = rand() % NUM_PIELES;
+                apariencia.peinado   = rand() % NUM_PEINADOS;
+                apariencia.colorPelo = rand() % NUM_COLORES_PELO;
+                apariencia.ropa      = rand() % NUM_ROPAS;
+                apariencia.colorRopa = rand() % NUM_COLORES_ROPA;
+            }
+
+            if (delta != 0) {
+                switch (opcionPJ) {
+                    case OPC_NOMBRE:
+                        indiceNombre = ciclar(indiceNombre, delta, NUM_NOMBRES);
+                        snprintf(jugador.nombre, sizeof(jugador.nombre), "%s", NOMBRES[indiceNombre]);
+                        break;
+                    case OPC_PIEL:       apariencia.piel      = ciclar(apariencia.piel, delta, NUM_PIELES); break;
+                    case OPC_PEINADO:    apariencia.peinado   = ciclar(apariencia.peinado, delta, NUM_PEINADOS); break;
+                    case OPC_COLOR_PELO: apariencia.colorPelo = ciclar(apariencia.colorPelo, delta, NUM_COLORES_PELO); break;
+                    case OPC_ROPA:       apariencia.ropa      = ciclar(apariencia.ropa, delta, NUM_ROPAS); break;
+                    case OPC_COLOR_ROPA: apariencia.colorRopa = ciclar(apariencia.colorRopa, delta, NUM_COLORES_ROPA); break;
+                }
+            }
+
+            if (aceptar) {
+                if (opcionPJ == OPC_NOMBRE) {
+                    pedirNombre(jugador.nombre, sizeof(jugador.nombre));
+                } else if (opcionPJ == OPC_COMENZAR) {
+                    estado = ESTADO_EXPLORACION;
+                    snprintf(logLinea1, sizeof(logLinea1), "¡Bienvenido, %s!", jugador.nombre);
+                    snprintf(logLinea2, sizeof(logLinea2), "Explora el mapa con el D-Pad.");
+                }
+            }
+        }
+        else if (estado == ESTADO_EXPLORACION) {
+            if (kDown & KEY_SELECT) { estado = ESTADO_PERSONALIZACION; opcionPJ = 0; velX = velY = 0.0f; }
+            int dx = ((kHeld & KEY_RIGHT) ? 1 : 0) - ((kHeld & KEY_LEFT) ? 1 : 0);
+            int dy = ((kHeld & KEY_DOWN)  ? 1 : 0) - ((kHeld & KEY_UP)   ? 1 : 0);
+            float objX = 0.0f, objY = 0.0f;
+            if (dx != 0 || dy != 0) {
+                // Direccion pedida: al instante si estabas quieto; si ya caminabas, debe
+                // mantenerse 4 frames (al soltar una diagonal los dos botones no se sueltan a la vez).
+                int dirNueva = direccionDesde(dx, dy);
+                if (!caminando) { if (dirNueva != dirObjetivo) framesGiro = FRAMES_X_GIRO - 1; dirObjetivo = dirNueva; framesCandidata = 0; }
+                else if (dirNueva != dirObjetivo) {
+                    if (dirNueva == dirCandidata) framesCandidata++;
+                    else { dirCandidata = dirNueva; framesCandidata = 1; }
+                    if (framesCandidata >= 4) { dirObjetivo = dirNueva; framesCandidata = 0; }
+                } else framesCandidata = 0;
+                float n = (dx != 0 && dy != 0) ? 0.7071f : 1.0f; // diagonal normalizada
+                objX = dx * n * VEL_MAX;
+                objY = dy * n * VEL_MAX;
+            }
+            // Aceleracion / frenado suaves
+            velX = acercar(velX, objX, (objX != 0.0f) ? ACELERACION : FRENADO);
+            velY = acercar(velY, objY, (objY != 0.0f) ? ACELERACION : FRENADO);
+            float nx = playerX + velX, ny = playerY + velY;
+            if (nx < 0) { nx = 0; velX = 0; }
+            if (nx > 400 - PJ_TAM) { nx = 400 - PJ_TAM; velX = 0; }
+            if (ny < 0) { ny = 0; velY = 0; }
+            if (ny > 240 - PJ_TAM) { ny = 240 - PJ_TAM; velY = 0; }
+            float movido = sqrtf((nx - playerX) * (nx - playerX) + (ny - playerY) * (ny - playerY));
+            playerX = nx; playerY = ny;
+            bool seMovio = movido > 0.05f;
+            caminando = seMovio;
+            if (seMovio) distAnim += movido; else distAnim = 0.0f;
+
+            // Giro gradual: rota de 45 en 45 grados por el camino mas corto (S -> SE -> E)
+            if (dirJugador != dirObjetivo) {
+                if (++framesGiro >= FRAMES_X_GIRO) {
+                    framesGiro = 0;
+                    int dif = (dirObjetivo - dirJugador + NUM_DIRS) % NUM_DIRS;
+                    dirJugador = (dirJugador + (dif <= NUM_DIRS / 2 ? 1 : NUM_DIRS - 1)) % NUM_DIRS;
+                }
+            } else framesGiro = 0;
 
             if (seMovio) {
                 contadorPasos++;
@@ -94,6 +364,7 @@ int main(int argc, char* argv[]) {
                     contadorPasos = 0;
                     if ((rand() % 100) < 10) {
                         estado = ESTADO_COMBATE;
+                        velX = velY = 0.0f;
                         enemigo.maxHp = 45 + (rand() % 25);
                         enemigo.hp = enemigo.maxHp;
                         opcionMenu = 0;
@@ -197,16 +468,57 @@ int main(int argc, char* argv[]) {
 
         // --- 1. PANTALLA SUPERIOR (400x240) ---
         C2D_SceneBegin(top);
-        if (estado == ESTADO_EXPLORACION) {
+        if (estado == ESTADO_PERSONALIZACION) {
+            C2D_TargetClear(top, clrUIFondo);
+            // Titulo
+            dibujarPanel(100.0f, 6.0f, 200.0f, 26.0f, clrUIBorde, clrUIPanel);
+            dibujarTexto(dynamicBuf, 118.0f, 10.0f, 0.55f, clrBlanco, "CREA TU PERSONAJE");
+
+            // Panel principal con vista previa grande (4x = 128x128)
+            dibujarPanel(110.0f, 38.0f, 180.0f, 178.0f, clrUIBorde, clrUIPanel);
+            C2D_DrawRectSolid(114.0f, 42.0f, 0.0f, 172.0f, 150.0f, C2D_Color32(44, 52, 78, 255));
+            C2D_DrawEllipseSolid(150.0f, 166.0f, 0.0f, 100.0f, 18.0f, C2D_Color32(24, 28, 44, 255));
+            int cuadroPrev = cuadroPorDistancia(contadorAnim * VEL_MAX); // misma cadencia que en el mapa
+            dibujarPersonaje(hojaPJ, &apariencia, dirPreview, cuadroPrev, 136.0f, 52.0f, 4.0f);
+            dibujarTexto(dynamicBuf, 120.0f, 194.0f, 0.5f, clrBlanco, jugador.nombre);
+
+            // Vista lateral: tamano real en el mapa (1x y 2x)
+            dibujarPanel(300.0f, 38.0f, 92.0f, 122.0f, clrUIBorde, clrUIPanel);
+            dibujarTexto(dynamicBuf, 310.0f, 42.0f, 0.4f, clrGris, "En el mapa");
+            C2D_DrawRectSolid(304.0f, 60.0f, 0.0f, 84.0f, 96.0f, clrPasto);
+            dibujarPersonaje(hojaPJ, &apariencia, dirPreview, CUADRO_QUIETO, 314.0f, 82.0f, 1.0f);
+            dibujarPersonaje(hojaPJ, &apariencia, dirPreview, cuadroPrev, 330.0f, 76.0f, 2.0f);
+
+            // Resumen a la izquierda
+            dibujarPanel(8.0f, 38.0f, 94.0f, 178.0f, clrUIBorde, clrUIPanel);
+            dibujarTexto(dynamicBuf, 16.0f, 44.0f, 0.42f, clrGris, "Estilo");
+            dibujarTexto(dynamicBuf, 16.0f, 62.0f, 0.42f, clrBlanco, PEINADOS[apariencia.peinado]);
+            dibujarTexto(dynamicBuf, 16.0f, 80.0f, 0.42f, clrBlanco, ROPAS[apariencia.ropa]);
+            dibujarTexto(dynamicBuf, 16.0f, 106.0f, 0.42f, clrGris, "Colores");
+            const ColorNombrado* muestras[3] = {&PIELES[apariencia.piel], &COLORES_PELO[apariencia.colorPelo], &COLORES_ROPA[apariencia.colorRopa]};
+            for (int i = 0; i < 3; i++) {
+                float my = 126.0f + i * 22.0f;
+                C2D_DrawRectSolid(16.0f, my, 0.0f, 16.0f, 16.0f, clrBlanco);
+                C2D_DrawRectSolid(17.0f, my + 1, 0.0f, 14.0f, 14.0f, colorDe(muestras[i]));
+                dibujarTexto(dynamicBuf, 38.0f, my + 1, 0.4f, clrBlanco, muestras[i]->nombre);
+            }
+            dibujarTexto(dynamicBuf, 300.0f, 166.0f, 0.38f, clrGris, "L/R: girar");
+            dibujarTexto(dynamicBuf, 300.0f, 182.0f, 0.38f, clrGris, "X: aleatorio");
+            dibujarTexto(dynamicBuf, 300.0f, 198.0f, 0.38f, clrGris, "START: salir");
+        } else if (estado == ESTADO_EXPLORACION) {
             C2D_TargetClear(top, clrPasto);
-            C2D_DrawRectSolid(playerX, playerY, 0.0f, 20.0f, 20.0f, clrJugador);
+            // Sombra bajo los pies + personaje personalizado (32x32, colision igual al tamano del sprite)
+            float px = floorf(playerX + 0.5f), py = floorf(playerY + 0.5f);
+            C2D_DrawEllipseSolid(px + 8.0f, py + 27.0f, 0.0f, 16.0f, 5.0f, C2D_Color32(20, 90, 20, 255));
+            dibujarPersonaje(hojaPJ, &apariencia, dirJugador, caminando ? cuadroPorDistancia(distAnim) : CUADRO_QUIETO, px, py, 1.0f);
         } else {
             C2D_TargetClear(top, clrArena);
-            // Jugador
-            C2D_DrawRectSolid(70.0f, 115.0f, 0.0f, 40.0f, 40.0f, clrJugador);
+            // Jugador (sprite personalizado a 2x)
+            C2D_DrawEllipseSolid(70.0f, 150.0f, 0.0f, 44.0f, 10.0f, C2D_Color32(30, 20, 38, 255));
+            dibujarPersonaje(hojaPJ, &apariencia, DIR_E, CUADRO_QUIETO, 60.0f, 96.0f, 2.0f);
             if (jugador.defendiendo) {
                 // Escudo visual celeste cuando se defiende
-                C2D_DrawRectSolid(116.0f, 110.0f, 0.0f, 6.0f, 50.0f, C2D_Color32(100, 240, 255, 255));
+                C2D_DrawRectSolid(124.0f, 105.0f, 0.0f, 6.0f, 50.0f, C2D_Color32(100, 240, 255, 255));
             }
 
             // Enemigo + Barra de vida superior
@@ -222,6 +534,49 @@ int main(int argc, char* argv[]) {
         // --- 2. PANTALLA INFERIOR (UI Estilizada 320x240) ---
         C2D_SceneBegin(bottom);
         C2D_TargetClear(bottom, clrUIFondo);
+
+        if (estado == ESTADO_PERSONALIZACION) {
+            dibujarPanel(8.0f, 4.0f, 304.0f, 26.0f, clrUIBorde, clrUIPanel);
+            dibujarTexto(dynamicBuf, 18.0f, 8.0f, 0.5f, clrBlanco, "Personalización");
+            for (int i = 0; i < NUM_OPC; i++) {
+                float fy = filaY0 + i * filaAlto;
+                bool sel = (opcionPJ == i);
+                if (i == OPC_COMENZAR) {
+                    dibujarPanel(80.0f, fy + 1, 160.0f, filaAlto - 2, sel ? clrBlanco : clrUIBorde, sel ? clrBtnSelect : clrBtnNormal);
+                    dibujarTexto(dynamicBuf, 122.0f, fy + 5, 0.5f, clrBlanco, etiquetasPJ[i]);
+                    continue;
+                }
+                dibujarPanel(8.0f, fy + 1, 304.0f, filaAlto - 2, sel ? clrBlanco : clrUIBorde, sel ? clrBtnSelect : clrBtnNormal);
+                if (sel) C2D_DrawRectSolid(14.0f, fy + 7, 0.0f, 4.0f, 11.0f, clrBlanco);
+                dibujarTexto(dynamicBuf, 24.0f, fy + 5, 0.46f, clrBlanco, etiquetasPJ[i]);
+
+                const char* valor = "";
+                const ColorNombrado* muestra = NULL;
+                switch (i) {
+                    case OPC_NOMBRE:      valor = jugador.nombre; break;
+                    case OPC_PIEL:        muestra = &PIELES[apariencia.piel]; break;
+                    case OPC_PEINADO:     valor = PEINADOS[apariencia.peinado]; break;
+                    case OPC_COLOR_PELO:  muestra = &COLORES_PELO[apariencia.colorPelo]; break;
+                    case OPC_ROPA:        valor = ROPAS[apariencia.ropa]; break;
+                    case OPC_COLOR_ROPA:  muestra = &COLORES_ROPA[apariencia.colorRopa]; break;
+                }
+                float vx = 190.0f;
+                if (muestra) {
+                    C2D_DrawRectSolid(vx, fy + 6, 0.0f, 13.0f, 13.0f, clrBlanco);
+                    C2D_DrawRectSolid(vx + 1, fy + 7, 0.0f, 11.0f, 11.0f, colorDe(muestra));
+                    valor = muestra->nombre;
+                    vx += 18.0f;
+                }
+                dibujarTexto(dynamicBuf, vx, fy + 5, 0.46f, clrBlanco, valor);
+                dibujarTexto(dynamicBuf, 160.0f, fy + 5, 0.46f, sel ? clrBlanco : clrGris, "<");
+                dibujarTexto(dynamicBuf, 292.0f, fy + 5, 0.46f, sel ? clrBlanco : clrGris, ">");
+            }
+            const char* ayuda = (opcionPJ == OPC_NOMBRE) ? "A: escribir nombre   Izq/Der: nombres sugeridos"
+                                                          : "Arriba/Abajo: elegir   Izq/Der: cambiar   A: aceptar";
+            dibujarTexto(dynamicBuf, 14.0f, 214.0f, 0.4f, clrGris, ayuda);
+            C3D_FrameEnd(0);
+            continue;
+        }
 
         // Panel Superior: Estado del Héroe y Barra de HP (con borde)
         C2D_DrawRectSolid(10.0f, 8.0f, 0.0f, 300.0f, 48.0f, clrUIBorde);
@@ -265,7 +620,8 @@ int main(int argc, char* argv[]) {
             // Caja informativa cuando estás caminando en el mapa
             C2D_DrawRectSolid(20.0f, 135.0f, 0.0f, 280.0f, 80.0f, clrUIPanel);
             dibujarTexto(dynamicBuf, 65.0f, 155.0f, 0.52f, clrBlanco, "[ MODO EXPLORACION ]");
-            dibujarTexto(dynamicBuf, 45.0f, 182.0f, 0.42f, clrGris, "Presiona START para salir al HBL");
+            dibujarTexto(dynamicBuf, 45.0f, 178.0f, 0.42f, clrGris, "Presiona START para salir al HBL");
+            dibujarTexto(dynamicBuf, 45.0f, 194.0f, 0.42f, clrGris, "SELECT: cambiar apariencia");
         }
 
         C3D_FrameEnd(0);
@@ -273,8 +629,9 @@ int main(int argc, char* argv[]) {
 
     // Liberar recursos al salir
     C2D_TextBufDelete(dynamicBuf);
+    C2D_SpriteSheetFree(hojaPJ);
     C2D_Fini();
     C3D_Fini();
     gfxExit();
     return 0;
-}
+}
