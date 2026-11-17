@@ -22,6 +22,10 @@
 #include "combate_meta.h"   // anclas y alcance de los cuadros de combate
 #include "enemigos_t3x.h"    // 3 enemigos base x 20 cuadros (gfx/enemigos.t3s)
 #include "enemigos_meta.h"  // anclas de los enemigos
+#include "mapa0_t3x.h"      // mapa del pueblo, tile izquierda (1024x941)
+#include "mapa1_t3x.h"      // mapa del pueblo, tile derecha
+#include "fondo_batalla_t3x.h"
+#include "mapa_colision.h"  // mascara de colision y spawn
 #if USAR_PERSONALIZACION
 #include "personaje_t3x.h" // Hoja del personaje por capas (gfx/personaje.t3s)
 #endif
@@ -261,7 +265,7 @@ static const u8 DUR_ATAQUE[6] = {6, 9, 4, 6, 7, 9};
 #define FR_DERROTA    150
 #define ESCALA_COMBATE 2.0f
 #define JUG_X  92.0f        // pies del viajero en combate
-#define JUG_Y 196.0f
+#define JUG_Y 204.0f        // sobre la tierra del fondo de batalla
 #define ENE_X 275.0f        // esquina del enemigo
 #define ENE_Y  95.0f
 #define ENE_TAM 55.0f
@@ -357,7 +361,7 @@ static const TipoEnemigo TIPOS_ENEMIGO[NUM_ENEMIGOS] = {
     {"Sapo cuchillero", 62, 16, 4, 3, {ARMA_FUEGO, ARMA_DAGA, ARMA_LUZ}},
 };
 #define ENE_PX 300.0f     // pies del enemigo en combate
-#define ENE_PY 194.0f
+#define ENE_PY 202.0f     // misma linea de tierra que el viajero
 static int eneTipo = 0, eneEscudos = 0, eneRoto = 0;   // eneRoto: 2 = pierde su turno, 1 = sigue roto, 0 = normal
 static bool eneDescubierta[MAX_DEBIL];
 static int eneHerT = 0, eneRotoFx = 0, danioTurno = 0, armaActual = 0;
@@ -396,6 +400,34 @@ static void dibujarEstrellas(float cx, float cy, int t) {
         C2D_DrawTriangle(x, y - 5, c, x - 4, y + 3, c, x + 4, y + 3, c, 0.0f);
         C2D_DrawTriangle(x, y + 5, c, x - 4, y - 2, c, x + 4, y - 2, c, 0.0f);
     }
+}
+
+// Caja de los pies (el ancla) contra la mascara de colision del mapa
+static int piesLibres(float x, float y) {
+    const float ox[3] = {-7.0f, 0.0f, 7.0f};
+    const float oy[2] = {-3.0f, 2.0f};
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 2; j++)
+            if (!mapaCaminable(x + ox[i], y + oy[j])) return 0;
+    return 1;
+}
+
+static void camaraMapa(float px, float py, float* camX, float* camY) {
+    float cx = px - 200.0f;
+    float cy = py - 148.0f; // centra el cuerpo (~64 px) en la pantalla
+    if (cx < 0.0f) cx = 0.0f;
+    if (cy < 0.0f) cy = 0.0f;
+    if (cx > (float)(MAPA_W - 400)) cx = (float)(MAPA_W - 400);
+    if (cy > (float)(MAPA_H - 240)) cy = (float)(MAPA_H - 240);
+    *camX = floorf(cx);
+    *camY = floorf(cy);
+}
+
+static void dibujarMapa(C2D_SpriteSheet t0, C2D_SpriteSheet t1, float camX, float camY) {
+    C2D_Image i0 = C2D_SpriteSheetGetImage(t0, 0);
+    C2D_Image i1 = C2D_SpriteSheetGetImage(t1, 0);
+    C2D_DrawImageAt(i0, floorf(-camX), floorf(-camY), 0.0f, NULL, 1.0f, 1.0f);
+    C2D_DrawImageAt(i1, floorf((float)MAPA_TILE_W - camX), floorf(-camY), 0.0f, NULL, 1.0f, 1.0f);
 }
 
 // Acerca v a objetivo como maximo 'paso' (aceleracion/frenado lineal)
@@ -466,6 +498,13 @@ int main(int argc, char* argv[]) {
     C2D_SpriteSheet hojaFx = C2D_SpriteSheetLoadFromMem(fx_t3x, fx_t3x_size);
     if (!hojaFx) svcBreak(USERBREAK_PANIC);
     C3D_TexSetFilter(C2D_SpriteSheetGetImage(hojaFx, 0).tex, GPU_NEAREST, GPU_NEAREST);
+    C2D_SpriteSheet hojaMapa0 = C2D_SpriteSheetLoadFromMem(mapa0_t3x, mapa0_t3x_size);
+    C2D_SpriteSheet hojaMapa1 = C2D_SpriteSheetLoadFromMem(mapa1_t3x, mapa1_t3x_size);
+    C2D_SpriteSheet hojaFondoBatalla = C2D_SpriteSheetLoadFromMem(fondo_batalla_t3x, fondo_batalla_t3x_size);
+    if (!hojaMapa0 || !hojaMapa1 || !hojaFondoBatalla) svcBreak(USERBREAK_PANIC);
+    C3D_TexSetFilter(C2D_SpriteSheetGetImage(hojaMapa0, 0).tex, GPU_NEAREST, GPU_NEAREST);
+    C3D_TexSetFilter(C2D_SpriteSheetGetImage(hojaMapa1, 0).tex, GPU_NEAREST, GPU_NEAREST);
+    C3D_TexSetFilter(C2D_SpriteSheetGetImage(hojaFondoBatalla, 0).tex, GPU_NEAREST, GPU_NEAREST);
 #if USAR_PERSONALIZACION
     C2D_SpriteSheet hojaPJ = C2D_SpriteSheetLoadFromMem(personaje_t3x, personaje_t3x_size);
     if (!hojaPJ) svcBreak(USERBREAK_PANIC);
@@ -597,7 +636,7 @@ int main(int argc, char* argv[]) {
                 jugador.maxHp = jugador.hp = he->hp;
                 jugador.atk = he->atk;
                 jugador.def = he->def;
-                playerX = 200.0f; playerY = 150.0f;
+                playerX = MAPA_SPAWN_X; playerY = MAPA_SPAWN_Y;
                 velX = velY = 0.0f; caminando = false; distAnim = 0.0f;
                 dirJugador = dirObjetivo = DIR_S;
                 estado = ESTADO_EXPLORACION;
@@ -666,7 +705,7 @@ int main(int argc, char* argv[]) {
                     estado = ESTADO_EXPLORACION;
                     heroe = -1;
                     jugador.maxHp = jugador.hp = 100; jugador.atk = 18; jugador.def = 5;
-                    playerX = 200.0f; playerY = 150.0f;
+                    playerX = MAPA_SPAWN_X; playerY = MAPA_SPAWN_Y;
                     snprintf(logLinea1, sizeof(logLinea1), "¡Bienvenido, %s!", jugador.nombre);
                     snprintf(logLinea2, sizeof(logLinea2), "Explora el mapa con el D-Pad.");
                 }
@@ -699,16 +738,22 @@ int main(int argc, char* argv[]) {
             velX = acercar(velX, objX, (objX != 0.0f) ? ACELERACION : FRENADO);
             velY = acercar(velY, objY, (objY != 0.0f) ? ACELERACION : FRENADO);
             float nx = playerX + velX, ny = playerY + velY;
-            // Limites de la pantalla segun el tamano del sprite (x, y = pies)
+            // Limites del mapa segun el tamano del sprite (x, y = pies)
             float limIzq = 16.0f, limDer = 16.0f, limArr = 30.0f;
             if (heroe >= 0) {
                 const Heroe* he = &HEROES[heroe];
                 limIzq = he->anclaX; limDer = he->ancho - he->anclaX; limArr = he->anclaY;
             }
             if (nx < limIzq) { nx = limIzq; velX = 0; }
-            if (nx > 400 - limDer) { nx = 400 - limDer; velX = 0; }
+            if (nx > (float)MAPA_W - limDer) { nx = (float)MAPA_W - limDer; velX = 0; }
             if (ny < limArr) { ny = limArr; velY = 0; }
-            if (ny > 238) { ny = 238; velY = 0; }
+            if (ny > (float)MAPA_H - 4.0f) { ny = (float)MAPA_H - 4.0f; velY = 0; }
+            // Colision: si el destino esta bloqueado, intenta deslizar por cada eje
+            if (!piesLibres(nx, ny)) {
+                if (piesLibres(nx, playerY)) { ny = playerY; velY = 0; }
+                else if (piesLibres(playerX, ny)) { nx = playerX; velX = 0; }
+                else { nx = playerX; ny = playerY; velX = velY = 0; }
+            }
             float movido = sqrtf((nx - playerX) * (nx - playerX) + (ny - playerY) * (ny - playerY));
             playerX = nx; playerY = ny;
             bool seMovio = movido > 0.05f;
@@ -726,7 +771,7 @@ int main(int argc, char* argv[]) {
 
             bool forzarCombate = (kDown & KEY_Y);  // Y: combate de prueba
             if (forzarCombate) { seMovio = true; contadorPasos = 29; }
-            if (seMovio) {
+            if (seMovio && (forzarCombate || mapaSalvaje(playerX, playerY))) {
                 contadorPasos++;
                 if (contadorPasos >= 30) {
                     contadorPasos = 0;
@@ -1053,20 +1098,24 @@ int main(int argc, char* argv[]) {
 #endif
         else if (estado == ESTADO_EXPLORACION) {
             C2D_TargetClear(top, clrPasto);
-            // Sombra bajo los pies + personaje personalizado (32x32, colision igual al tamano del sprite)
-            float px = floorf(playerX + 0.5f), py = floorf(playerY + 0.5f);
+            float camX, camY;
+            camaraMapa(playerX, playerY, &camX, &camY);
+            dibujarMapa(hojaMapa0, hojaMapa1, camX, camY);
+            // Sombra bajo los pies + heroe (coordenadas de pantalla)
+            float px = floorf(playerX - camX + 0.5f), py = floorf(playerY - camY + 0.5f);
             if (heroe >= 0) {
-                dibujarSombra(px, py, HEROES[heroe].anchoCuerpo, C2D_Color32(20, 90, 20, 255));
+                dibujarSombra(px, py, HEROES[heroe].anchoCuerpo, C2D_Color32(20, 40, 20, 160));
                 dibujarHeroe(hojaHeroes, heroe, dirHeroe(dirJugador), cuadroHeroe(caminando, distAnim), px, py, 1.0f);
             }
 #if USAR_PERSONALIZACION
             else {
-                C2D_DrawEllipseSolid(px - 8.0f, py - 3.0f, 0.0f, 16.0f, 5.0f, C2D_Color32(20, 90, 20, 255));
+                C2D_DrawEllipseSolid(px - 8.0f, py - 3.0f, 0.0f, 16.0f, 5.0f, C2D_Color32(20, 40, 20, 160));
                 dibujarPersonaje(hojaPJ, &apariencia, dirJugador, caminando ? cuadroPorDistancia(distAnim) : CUADRO_QUIETO, px - 16.0f, py - 30.0f, 1.0f);
             }
 #endif
         } else {
             C2D_TargetClear(top, clrArena);
+            C2D_DrawImageAt(C2D_SpriteSheetGetImage(hojaFondoBatalla, 0), 0.0f, 0.0f, 0.0f, NULL, 1.0f, 1.0f);
             C2D_SetTintMode(C2D_TintSolid);
             float jx = JUG_X + jugOffX + jugRetroceso;
             // Jugador: viajero elegido a 2x, de perfil mirando al enemigo, animado segun la fase
@@ -1095,7 +1144,8 @@ int main(int argc, char* argv[]) {
                 bool destello = (jugFlash > 0 && (jugFlash / 2) % 2 == 0);
                 C2D_PlainImageTint(&tinte, destello ? C2D_Color32(255, 255, 255, 255) : C2D_Color32(255, 70, 70, 255), destello ? 0.85f : 0.35f);
                 dibujarHeroeCombate(hojasCombate[heroe], heroe, c, jx, JUG_Y, ESCALA_COMBATE, jugFlash > 0 ? &tinte : NULL);
-                dibujarTextoCentrado(dynamicBuf, JUG_X, 46.0f, 0.5f, clrBlanco, jugador.nombre);
+                C2D_DrawRectSolid(8.0f, 6.0f, 0.0f, 150.0f, 30.0f, C2D_Color32(16, 12, 22, 190));
+                dibujarTextoCentrado(dynamicBuf, 83.0f, 10.0f, 0.5f, clrBlanco, jugador.nombre);
             }
 #if USAR_PERSONALIZACION
             else {
@@ -1148,6 +1198,7 @@ int main(int argc, char* argv[]) {
                 }
                 // Ficha: nombre, vida, escudos y debilidades
                 if (fase != F_VICTORIA || faseT < 40) {
+                    C2D_DrawRectSolid(224.0f, 0.0f, 0.0f, 176.0f, 52.0f, C2D_Color32(16, 12, 22, 190));
                     char info[40];
                     snprintf(info, sizeof(info), "%s", enemigo.nombre);
                     dibujarTexto(dynamicBuf, 236.0f, 2.0f, 0.45f, clrBlanco, info);
@@ -1308,6 +1359,9 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < NUM_HEROES; i++) C2D_SpriteSheetFree(hojasCombate[i]);
     C2D_SpriteSheetFree(hojaFx);
     C2D_SpriteSheetFree(hojaEnemigos);
+    C2D_SpriteSheetFree(hojaMapa0);
+    C2D_SpriteSheetFree(hojaMapa1);
+    C2D_SpriteSheetFree(hojaFondoBatalla);
 #if USAR_PERSONALIZACION
     C2D_SpriteSheetFree(hojaPJ);
 #endif
@@ -1315,4 +1369,4 @@ int main(int argc, char* argv[]) {
     C3D_Fini();
     gfxExit();
     return 0;
-}
+}

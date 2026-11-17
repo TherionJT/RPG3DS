@@ -126,7 +126,9 @@ main.o: R:/RPG3DS/source/main.c D:/devkitPro/libctru/include/3ds.h \
  R:/RPG3DS/build/combate_therion_t3x.h \
  R:/RPG3DS/build/combate_haanit_t3x.h R:/RPG3DS/build/fx_t3x.h \
  R:/RPG3DS/source/combate_meta.h R:/RPG3DS/build/enemigos_t3x.h \
- R:/RPG3DS/source/enemigos_meta.h
+ R:/RPG3DS/source/enemigos_meta.h R:/RPG3DS/build/mapa0_t3x.h \
+ R:/RPG3DS/build/mapa1_t3x.h R:/RPG3DS/build/fondo_batalla_t3x.h \
+ R:/RPG3DS/source/mapa_colision.h
 D:/devkitPro/libctru/include/3ds.h:
 D:/devkitPro/libctru/include/3ds/types.h:
 D:/devkitPro/libctru/include/3ds/result.h:
@@ -260,3 +262,7 @@ R:/RPG3DS/build/fx_t3x.h:
 R:/RPG3DS/source/combate_meta.h:
 R:/RPG3DS/build/enemigos_t3x.h:
 R:/RPG3DS/source/enemigos_meta.h:
+R:/RPG3DS/build/mapa0_t3x.h:
+R:/RPG3DS/build/mapa1_t3x.h:
+R:/RPG3DS/build/fondo_batalla_t3x.h:
+R:/RPG3DS/source/mapa_colision.h:
