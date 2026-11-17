@@ -1,0 +1,9 @@
+{
+  "name": "RPG3DS",
+  "engine": "generic",
+  "launch": { "cmd": "${AZAHAR}", "args": ["RPG3DS.3dsx"] },
+  "log": { "stdout": true },
+  "window": "Azahar 2126.2",
+  "sourceRoots": ["source"],
+  "vars": { "AZAHAR": "D:/Azahar/azahar.exe" }
+}

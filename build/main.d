@@ -117,7 +117,15 @@ main.o: R:/RPG3DS/source/main.c D:/devkitPro/libctru/include/3ds.h \
  D:/devkitPro/libctru/include/c2d/spritesheet.h \
  D:/devkitPro/libctru/include/c2d/sprite.h \
  D:/devkitPro/libctru/include/c2d/text.h \
- D:/devkitPro/libctru/include/c2d/font.h R:/RPG3DS/build/heroes_t3x.h
+ D:/devkitPro/libctru/include/c2d/font.h R:/RPG3DS/build/heroes_t3x.h \
+ R:/RPG3DS/build/combate_ophilia_t3x.h \
+ R:/RPG3DS/build/combate_cyrus_t3x.h R:/RPG3DS/build/combate_tressa_t3x.h \
+ R:/RPG3DS/build/combate_olberic_t3x.h \
+ R:/RPG3DS/build/combate_primrose_t3x.h \
+ R:/RPG3DS/build/combate_alfyn_t3x.h \
+ R:/RPG3DS/build/combate_therion_t3x.h \
+ R:/RPG3DS/build/combate_haanit_t3x.h R:/RPG3DS/build/fx_t3x.h \
+ R:/RPG3DS/source/combate_meta.h
 D:/devkitPro/libctru/include/3ds.h:
 D:/devkitPro/libctru/include/3ds/types.h:
 D:/devkitPro/libctru/include/3ds/result.h:
@@ -239,3 +247,13 @@ D:/devkitPro/libctru/include/c2d/sprite.h:
 D:/devkitPro/libctru/include/c2d/text.h:
 D:/devkitPro/libctru/include/c2d/font.h:
 R:/RPG3DS/build/heroes_t3x.h:
+R:/RPG3DS/build/combate_ophilia_t3x.h:
+R:/RPG3DS/build/combate_cyrus_t3x.h:
+R:/RPG3DS/build/combate_tressa_t3x.h:
+R:/RPG3DS/build/combate_olberic_t3x.h:
+R:/RPG3DS/build/combate_primrose_t3x.h:
+R:/RPG3DS/build/combate_alfyn_t3x.h:
+R:/RPG3DS/build/combate_therion_t3x.h:
+R:/RPG3DS/build/combate_haanit_t3x.h:
+R:/RPG3DS/build/fx_t3x.h:
+R:/RPG3DS/source/combate_meta.h:
