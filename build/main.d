@@ -117,7 +117,7 @@ main.o: R:/RPG3DS/source/main.c D:/devkitPro/libctru/include/3ds.h \
  D:/devkitPro/libctru/include/c2d/spritesheet.h \
  D:/devkitPro/libctru/include/c2d/sprite.h \
  D:/devkitPro/libctru/include/c2d/text.h \
- D:/devkitPro/libctru/include/c2d/font.h R:/RPG3DS/build/personaje_t3x.h
+ D:/devkitPro/libctru/include/c2d/font.h R:/RPG3DS/build/heroes_t3x.h
 D:/devkitPro/libctru/include/3ds.h:
 D:/devkitPro/libctru/include/3ds/types.h:
 D:/devkitPro/libctru/include/3ds/result.h:
@@ -238,4 +238,4 @@ D:/devkitPro/libctru/include/c2d/spritesheet.h:
 D:/devkitPro/libctru/include/c2d/sprite.h:
 D:/devkitPro/libctru/include/c2d/text.h:
 D:/devkitPro/libctru/include/c2d/font.h:
-R:/RPG3DS/build/personaje_t3x.h:
+R:/RPG3DS/build/heroes_t3x.h:
