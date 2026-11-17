@@ -1,0 +1,23 @@
+--atlas -f rgba8888 -z auto
+fx_tajo_0.png
+fx_tajo_1.png
+fx_tajo_2.png
+fx_estocada_0.png
+fx_estocada_1.png
+fx_impacto_0.png
+fx_impacto_1.png
+fx_impacto_2.png
+fx_flecha.png
+fx_orbe_0.png
+fx_orbe_1.png
+fx_luz_0.png
+fx_luz_1.png
+fx_luz_2.png
+fx_luz_3.png
+fx_brillo_0.png
+fx_brillo_1.png
+fx_brillo_2.png
+fx_escudo_0.png
+fx_escudo_1.png
+fx_garra_0.png
+fx_garra_1.png

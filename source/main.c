@@ -10,6 +10,16 @@
 #define USAR_PERSONALIZACION 0
 
 #include "heroes_t3x.h"    // 8 viajeros: 4 direcciones x 4 cuadros (gfx/heroes.t3s)
+#include "combate_ophilia_t3x.h"
+#include "combate_cyrus_t3x.h"
+#include "combate_tressa_t3x.h"
+#include "combate_olberic_t3x.h"
+#include "combate_primrose_t3x.h"
+#include "combate_alfyn_t3x.h"
+#include "combate_therion_t3x.h"
+#include "combate_haanit_t3x.h"
+#include "fx_t3x.h"         // efectos de combate (gfx/fx.t3s)
+#include "combate_meta.h"   // anclas y alcance de los cuadros de combate
 #if USAR_PERSONALIZACION
 #include "personaje_t3x.h" // Hoja del personaje por capas (gfx/personaje.t3s)
 #endif
@@ -227,6 +237,114 @@ static void dibujarBarra(float x, float y, float w, float h, float frac, u32 fon
     C2D_DrawRectSolid(x, y, 0.0f, w * frac, h, color);
 }
 
+// ==========================================
+// ANIMACIONES DE COMBATE (gfx/combate_<viajero>.t3s + gfx/fx.t3s)
+// ==========================================
+// 18 cuadros por viajero, mirando a la derecha (ver combate_meta.h)
+enum { CC_IDLE = 0, CC_ATAQUE = 4, CC_DEFENSA = 10, CC_HERIDO = 12, CC_VICTORIA = 14, CC_KO = 16 };
+typedef enum { EST_TAJO, EST_ESTOCADA, EST_DOBLE, EST_GIRO, EST_HACHA, EST_FLECHA, EST_ORBE, EST_LUZ } EstiloAtaque;
+// Ophilia, Cyrus, Tressa, Olberic, Primrose, Alfyn, Therion, H'aanit
+static const EstiloAtaque ESTILO_HEROE[NUM_HEROES] = {
+    EST_LUZ, EST_ORBE, EST_ESTOCADA, EST_TAJO, EST_GIRO, EST_HACHA, EST_DOBLE, EST_FLECHA
+};
+static bool esCuerpoACuerpo(EstiloAtaque e) { return e <= EST_HACHA; }
+
+// Duracion en frames (60 fps) de los 6 cuadros del ataque: carga, impulso, golpe, impacto, seguimiento, recuperar
+static const u8 DUR_ATAQUE[6] = {6, 9, 4, 6, 7, 9};
+#define CUADRO_GOLPE    3   // el arma conecta / se suelta el proyectil al empezar este cuadro
+#define FR_AVANCE      14   // carrera hacia el enemigo (y regreso)
+#define FR_ENE_AVANCE  18
+#define FR_ENE_GOLPE   18
+#define FR_VICTORIA   140
+#define FR_DERROTA    150
+#define ESCALA_COMBATE 2.0f
+#define JUG_X  92.0f        // pies del viajero en combate
+#define JUG_Y 196.0f
+#define ENE_X 275.0f        // esquina del enemigo
+#define ENE_Y  95.0f
+#define ENE_TAM 55.0f
+
+static int inicioCuadroAtaque(int c) { int a = 0; for (int i = 0; i < c; i++) a += DUR_ATAQUE[i]; return a; }
+static int cuadroAtaque(int t) { for (int i = 0; i < 6; i++) if (t < inicioCuadroAtaque(i + 1)) return i; return 5; }
+static float suave(float k) { if (k < 0) k = 0; if (k > 1) k = 1; return k * k * (3.0f - 2.0f * k); }
+
+// Profundidad 0: todo el combate se pinta en orden (el cuadro transparente no tapa al enemigo ni a los textos)
+static void dibujarHeroeCombate(C2D_SpriteSheet hoja, int h, int cuadro, float x, float y, float escala, const C2D_ImageTint* tinte) {
+    const MetaCombate* m = &META_COMBATE[h];
+    C2D_Image img = C2D_SpriteSheetGetImage(hoja, cuadro);
+    C2D_DrawImageAt(img, floorf(x - m->ax * escala + 0.5f), floorf(y - m->ay * escala + 0.5f), 0.0f, tinte, escala, escala);
+}
+
+// --- Efectos (tajos, impactos, luz...) ---
+#define MAX_FX 12
+typedef struct { bool activo; int base, num, dur, t; float x, y, vx, escala; } Efecto;
+static Efecto efectos[MAX_FX];
+static void lanzarFx(int base, int num, int dur, float x, float y, float vx) {
+    for (int i = 0; i < MAX_FX; i++) if (!efectos[i].activo) {
+        efectos[i] = (Efecto){true, base, num, dur, 0, x, y, vx, ESCALA_COMBATE};
+        return;
+    }
+}
+static void actualizarFx(void) {
+    for (int i = 0; i < MAX_FX; i++) if (efectos[i].activo) {
+        efectos[i].x += efectos[i].vx;
+        if (++efectos[i].t >= efectos[i].num * efectos[i].dur) efectos[i].activo = false;
+    }
+}
+static void dibujarImagenCentrada(C2D_SpriteSheet hoja, int idx, float x, float y, float esc) {
+    C2D_Image img = C2D_SpriteSheetGetImage(hoja, idx);
+    C2D_DrawImageAt(img, floorf(x - img.subtex->width * esc / 2), floorf(y - img.subtex->height * esc / 2), 0.0f, NULL, esc, esc);
+}
+static void dibujarFx(C2D_SpriteSheet hojaFx) {
+    for (int i = 0; i < MAX_FX; i++) if (efectos[i].activo) {
+        const Efecto* e = &efectos[i];
+        dibujarImagenCentrada(hojaFx, e->base + e->t / e->dur, e->x, e->y, e->escala);
+    }
+}
+
+// --- Numeros de dano flotantes ---
+#define MAX_NUMEROS 4
+typedef struct { bool activo; int valor, t; float x, y; u32 color; } NumeroDanio;
+static NumeroDanio numeros[MAX_NUMEROS];
+static void lanzarNumero(int valor, float x, float y, u32 color) {
+    int libre = 0;
+    for (int i = 0; i < MAX_NUMEROS; i++) if (!numeros[i].activo) { libre = i; break; }
+    numeros[libre] = (NumeroDanio){true, valor, 0, x, y, color};
+}
+static void actualizarNumeros(void) {
+    for (int i = 0; i < MAX_NUMEROS; i++) if (numeros[i].activo) {
+        numeros[i].t++;
+        numeros[i].y -= (numeros[i].t < 10) ? 2.0f : 0.3f;
+        if (numeros[i].t > 45) numeros[i].activo = false;
+    }
+}
+static void dibujarNumeros(C2D_TextBuf buf) {
+    for (int i = 0; i < MAX_NUMEROS; i++) if (numeros[i].activo) {
+        char s[8]; snprintf(s, sizeof(s), "%d", numeros[i].valor);
+        float x = numeros[i].x, y = numeros[i].y;
+        u32 negro = C2D_Color32(0, 0, 0, 255);
+        dibujarTextoCentrado(buf, x - 1, y, 0.75f, negro, s);
+        dibujarTextoCentrado(buf, x + 1, y, 0.75f, negro, s);
+        dibujarTextoCentrado(buf, x, y - 1, 0.75f, negro, s);
+        dibujarTextoCentrado(buf, x, y + 1, 0.75f, negro, s);
+        dibujarTextoCentrado(buf, x, y, 0.75f, numeros[i].color, s);
+    }
+}
+
+// Estado visual compartido del combate
+typedef enum {
+    F_MENU, F_AVANZA, F_ATACA, F_PROYECTIL, F_REGRESA, F_DEFENSA,
+    F_ENE_AVANZA, F_ENE_GOLPE, F_ENE_REGRESA, F_VICTORIA, F_DERROTA
+} FaseCombate;
+static int eneFlash = 0, eneTemblor = 0, jugFlash = 0;
+
+static void golpearEnemigo(Entidad* e, int dmg, float x, float y) {
+    e->hp -= dmg; if (e->hp < 0) e->hp = 0;
+    eneFlash = 8; eneTemblor = 12;
+    lanzarFx(FX_IMPACTO_0, 3, 4, x, y, 0.0f);
+    lanzarNumero(dmg, ENE_X + ENE_TAM / 2, ENE_Y + 10, C2D_Color32(255, 255, 255, 255));
+}
+
 // Acerca v a objetivo como maximo 'paso' (aceleracion/frenado lineal)
 static float acercar(float v, float objetivo, float paso) {
     if (v < objetivo) return (v + paso > objetivo) ? objetivo : v + paso;
@@ -278,6 +396,20 @@ int main(int argc, char* argv[]) {
     C2D_SpriteSheet hojaHeroes = C2D_SpriteSheetLoadFromMem(heroes_t3x, heroes_t3x_size);
     if (!hojaHeroes) svcBreak(USERBREAK_PANIC);
     C3D_TexSetFilter(C2D_SpriteSheetGetImage(hojaHeroes, 0).tex, GPU_NEAREST, GPU_NEAREST);
+    // Hojas de combate (una por viajero) y efectos
+    const void* datosCombate[NUM_HEROES] = {combate_ophilia_t3x, combate_cyrus_t3x, combate_tressa_t3x, combate_olberic_t3x,
+                                            combate_primrose_t3x, combate_alfyn_t3x, combate_therion_t3x, combate_haanit_t3x};
+    const size_t tamCombate[NUM_HEROES] = {combate_ophilia_t3x_size, combate_cyrus_t3x_size, combate_tressa_t3x_size, combate_olberic_t3x_size,
+                                           combate_primrose_t3x_size, combate_alfyn_t3x_size, combate_therion_t3x_size, combate_haanit_t3x_size};
+    C2D_SpriteSheet hojasCombate[NUM_HEROES];
+    for (int i = 0; i < NUM_HEROES; i++) {
+        hojasCombate[i] = C2D_SpriteSheetLoadFromMem(datosCombate[i], tamCombate[i]);
+        if (!hojasCombate[i]) svcBreak(USERBREAK_PANIC);
+        C3D_TexSetFilter(C2D_SpriteSheetGetImage(hojasCombate[i], 0).tex, GPU_NEAREST, GPU_NEAREST);
+    }
+    C2D_SpriteSheet hojaFx = C2D_SpriteSheetLoadFromMem(fx_t3x, fx_t3x_size);
+    if (!hojaFx) svcBreak(USERBREAK_PANIC);
+    C3D_TexSetFilter(C2D_SpriteSheetGetImage(hojaFx, 0).tex, GPU_NEAREST, GPU_NEAREST);
 #if USAR_PERSONALIZACION
     C2D_SpriteSheet hojaPJ = C2D_SpriteSheetLoadFromMem(personaje_t3x, personaje_t3x_size);
     if (!hojaPJ) svcBreak(USERBREAK_PANIC);
@@ -300,6 +432,13 @@ int main(int argc, char* argv[]) {
     float playerX = 200.0f, playerY = 150.0f; // posicion de los pies
     int contadorPasos = 0;
     int opcionMenu = 0; // 0: Atacar, 1: Defender, 2: Huir
+    // Animacion del combate
+    FaseCombate fase = F_MENU;
+    int faseT = 0;
+    float jugOffX = 0.0f, avanceMax = 0.0f, jugRetroceso = 0.0f, eneOffX = 0.0f;
+    int danioPend = 0;
+    bool proyActivo = false;
+    float proyX = 0.0f, proyY = 0.0f;
 
     // Seleccion de viajero
     int heroeSel = 0;          // carta resaltada en la seleccion
@@ -339,7 +478,6 @@ int main(int argc, char* argv[]) {
     // Paleta de colores para la UI y el juego
     u32 clrPasto      = C2D_Color32(34, 139, 34, 255);
     u32 clrArena      = C2D_Color32(45, 30, 55, 255);
-    u32 clrEnemigo    = C2D_Color32(220, 50, 50, 255);
     u32 clrVidaBg     = C2D_Color32(60, 20, 20, 255);
     u32 clrVida       = C2D_Color32(0, 220, 90, 255);
 
@@ -528,16 +666,21 @@ int main(int argc, char* argv[]) {
                 }
             } else framesGiro = 0;
 
+            bool forzarCombate = (kDown & KEY_Y);  // Y: combate de prueba
+            if (forzarCombate) { seMovio = true; contadorPasos = 29; }
             if (seMovio) {
                 contadorPasos++;
                 if (contadorPasos >= 30) {
                     contadorPasos = 0;
-                    if ((rand() % 100) < 10) {
+                    if ((rand() % 100) < 10 || forzarCombate) {
                         estado = ESTADO_COMBATE;
                         velX = velY = 0.0f;
                         enemigo.maxHp = 45 + (rand() % 25);
                         enemigo.hp = enemigo.maxHp;
                         opcionMenu = 0;
+                        fase = F_MENU; faseT = 0; jugOffX = eneOffX = jugRetroceso = 0.0f;
+                        proyActivo = false; eneFlash = eneTemblor = jugFlash = 0;
+                        memset(efectos, 0, sizeof(efectos)); memset(numeros, 0, sizeof(numeros));
                         snprintf(logLinea1, sizeof(logLinea1), "¡Un %s salvaje corta el paso!", enemigo.nombre);
                         snprintf(logLinea2, sizeof(logLinea2), "Selecciona un comando de accion.");
                     }
@@ -548,84 +691,192 @@ int main(int argc, char* argv[]) {
         // LÓGICA: MODO COMBATE
         // ==========================================
         else if (estado == ESTADO_COMBATE) {
-            if (kDown & KEY_UP)   opcionMenu = (opcionMenu + 2) % 3;
-            if (kDown & KEY_DOWN) opcionMenu = (opcionMenu + 1) % 3;
+            faseT++;
+            actualizarFx();
+            actualizarNumeros();
+            if (jugFlash > 0) jugFlash--;
+            if (eneFlash > 0) eneFlash--;
+            if (eneTemblor > 0) eneTemblor--;
+            jugRetroceso *= 0.85f;
+            EstiloAtaque estilo = (heroe >= 0) ? ESTILO_HEROE[heroe] : EST_TAJO;
+            float eneCX = ENE_X + ENE_TAM / 2 + eneOffX, eneCY = ENE_Y + ENE_TAM / 2;
 
-            bool confirmarAccion = (kDown & KEY_A);
+            if (fase == F_MENU) {
+                if (kDown & KEY_UP)   opcionMenu = (opcionMenu + 2) % 3;
+                if (kDown & KEY_DOWN) opcionMenu = (opcionMenu + 1) % 3;
 
-            // Soporte para Pantalla Táctil en los 3 botones de comando
-            if (kDown & KEY_TOUCH) {
-                touchPosition touch;
-                hidTouchRead(&touch);
-                for (int i = 0; i < 3; i++) {
-                    int btnY = 128 + (i * 34);
-                    if (touch.px >= 20 && touch.px <= 300 && touch.py >= btnY && touch.py <= btnY + 28) {
-                        opcionMenu = i;
-                        confirmarAccion = true;
+                bool confirmarAccion = (kDown & KEY_A);
+
+                // Soporte para Pantalla Táctil en los 3 botones de comando
+                if (kDown & KEY_TOUCH) {
+                    touchPosition touch;
+                    hidTouchRead(&touch);
+                    for (int i = 0; i < 3; i++) {
+                        int btnY = 128 + (i * 34);
+                        if (touch.px >= 20 && touch.px <= 300 && touch.py >= btnY && touch.py <= btnY + 28) {
+                            opcionMenu = i;
+                            confirmarAccion = true;
+                        }
+                    }
+                }
+
+                if (confirmarAccion) {
+                    jugador.defendiendo = false;
+                    faseT = 0;
+                    if (opcionMenu == 0) { // ATACAR: el dano se aplica cuando el arma conecta
+                        danioPend = jugador.atk - enemigo.def + (rand() % 5);
+                        if (danioPend < 1) danioPend = 1;
+                        snprintf(logLinea1, sizeof(logLinea1), "¡%s ataca!", jugador.nombre);
+                        logLinea2[0] = '\0';
+                        if (esCuerpoACuerpo(estilo)) {
+                            // corre hasta que la punta del arma (cuadro de golpe) toque al enemigo
+                            int alc = (heroe >= 0) ? META_COMBATE[heroe].alcance[CUADRO_GOLPE][0] : 20;
+                            avanceMax = ENE_X + 6.0f - JUG_X - alc * ESCALA_COMBATE;
+                            if (avanceMax < 0) avanceMax = 0;
+                            fase = F_AVANZA;
+                        } else fase = F_ATACA;
+                    }
+                    else if (opcionMenu == 1) { // DEFENDER (-30% daño recibido)
+                        jugador.defendiendo = true;
+                        snprintf(logLinea1, sizeof(logLinea1), "Adoptas postura defensiva (-30%% daño).");
+                        logLinea2[0] = '\0';
+                        fase = F_DEFENSA;
+                    }
+                    else if (opcionMenu == 2) { // HUIR
+                        if ((rand() % 100) < 65) {
+                            estado = ESTADO_EXPLORACION;
+                            snprintf(logLinea1, sizeof(logLinea1), "¡Escapaste del combate con exito!");
+                            snprintf(logLinea2, sizeof(logLinea2), "Continua explorando el mapa.");
+                        } else {
+                            snprintf(logLinea1, sizeof(logLinea1), "¡Intentaste huir pero el enemigo te bloqueo!");
+                            logLinea2[0] = '\0';
+                            fase = F_ENE_AVANZA;
+                        }
                     }
                 }
             }
-
-            if (confirmarAccion) {
-                jugador.defendiendo = false;
-                bool turnoEjecutado = false;
-
-                if (opcionMenu == 0) { // ATACAR
-                    int dmg = jugador.atk - enemigo.def + (rand() % 5);
-                    if (dmg < 1) dmg = 1;
-                    enemigo.hp -= dmg;
-                    snprintf(logLinea1, sizeof(logLinea1), "¡Atacas al %s! Causas %d DMG.", enemigo.nombre, dmg);
-                    turnoEjecutado = true;
-                }
-                else if (opcionMenu == 1) { // DEFENDER (-30% daño recibido)
-                    jugador.defendiendo = true;
-                    snprintf(logLinea1, sizeof(logLinea1), "Adoptas postura defensiva (-30%% daño).");
-                    turnoEjecutado = true;
-                }
-                else if (opcionMenu == 2) { // HUIR
-                    if ((rand() % 100) < 65) {
-                        estado = ESTADO_EXPLORACION;
-                        snprintf(logLinea1, sizeof(logLinea1), "¡Escapaste del combate con exito!");
-                        snprintf(logLinea2, sizeof(logLinea2), "Continua explorando el mapa.");
-                    } else {
-                        snprintf(logLinea1, sizeof(logLinea1), "¡Intentaste huir pero el enemigo te bloqueo!");
-                        turnoEjecutado = true;
+            else if (fase == F_AVANZA) {
+                jugOffX = avanceMax * suave(faseT / (float)FR_AVANCE);
+                if (faseT >= FR_AVANCE) { fase = F_ATACA; faseT = 0; }
+            }
+            else if (fase == F_ATACA) {
+                int tGolpe = inicioCuadroAtaque(CUADRO_GOLPE);
+                int tSegundo = inicioCuadroAtaque(5);
+                bool dosGolpes = (estilo == EST_DOBLE || estilo == EST_GIRO);
+                int d1 = dosGolpes ? (danioPend + 1) / 2 : danioPend;
+                const MetaCombate* mc = &META_COMBATE[heroe >= 0 ? heroe : 0];
+                float puntaX = JUG_X + jugOffX + mc->alcance[CUADRO_GOLPE][0] * ESCALA_COMBATE;
+                float puntaY = JUG_Y + mc->alcance[CUADRO_GOLPE][1] * ESCALA_COMBATE;
+                if (faseT == tGolpe) {
+                    switch (estilo) {
+                        case EST_TAJO: case EST_HACHA: case EST_DOBLE: case EST_GIRO:
+                            lanzarFx(FX_TAJO_0, 3, 4, eneCX - 14, eneCY, 0.0f);
+                            golpearEnemigo(&enemigo, d1, eneCX, eneCY);
+                            break;
+                        case EST_ESTOCADA:
+                            lanzarFx(FX_ESTOCADA_0, 2, 5, eneCX - 30, puntaY, 1.5f);
+                            golpearEnemigo(&enemigo, d1, eneCX - 6, puntaY);
+                            break;
+                        case EST_FLECHA: case EST_ORBE:
+                            proyActivo = true; proyX = puntaX; proyY = puntaY;
+                            break;
+                        case EST_LUZ:
+                            lanzarFx(FX_LUZ_0, 4, 5, eneCX, eneCY, 0.0f);
+                            lanzarFx(FX_BRILLO_0, 3, 5, puntaX, puntaY - 10, 0.0f);
+                            break;
                     }
+                    if (estilo != EST_FLECHA && estilo != EST_ORBE && estilo != EST_LUZ)
+                        snprintf(logLinea1, sizeof(logLinea1), "¡Atacas al %s! Causas %d DMG.", enemigo.nombre, danioPend);
                 }
-
-                // Comprobar victoria
-                if (enemigo.hp <= 0 && estado == ESTADO_COMBATE) {
-                    enemigo.hp = 0;
-                    estado = ESTADO_EXPLORACION;
-                    snprintf(logLinea1, sizeof(logLinea1), "¡Victoria! Derrotaste al %s.", enemigo.nombre);
-                    snprintf(logLinea2, sizeof(logLinea2), "Explora el mapa para buscar mas combates.");
+                if (estilo == EST_LUZ && faseT == tGolpe + 8) {
+                    golpearEnemigo(&enemigo, danioPend, eneCX, eneCY);
+                    snprintf(logLinea1, sizeof(logLinea1), "¡La luz sagrada golpea! %d DMG.", danioPend);
                 }
-                // Contraataque del enemigo
-                else if (turnoEjecutado && estado == ESTADO_COMBATE) {
+                if (dosGolpes && faseT == tSegundo && danioPend - d1 > 0) {
+                    lanzarFx(FX_TAJO_0, 3, 4, eneCX - 8, eneCY - 10, 0.0f);
+                    golpearEnemigo(&enemigo, danioPend - d1, eneCX + 6, eneCY - 8);
+                }
+                if (faseT >= inicioCuadroAtaque(6) && !(estilo == EST_LUZ && faseT < tGolpe + 9)) {
+                    faseT = 0;
+                    fase = esCuerpoACuerpo(estilo) ? F_REGRESA : F_PROYECTIL;
+                }
+            }
+            else if (fase == F_REGRESA) {
+                jugOffX = avanceMax * (1.0f - suave(faseT / (float)FR_AVANCE));
+                if (faseT >= FR_AVANCE) { jugOffX = 0; faseT = 0; fase = (enemigo.hp <= 0) ? F_VICTORIA : F_ENE_AVANZA; }
+            }
+            else if (fase == F_PROYECTIL) {
+                // espera a que la flecha/orbe llegue y deja respirar el impacto
+                if (!proyActivo && faseT > 14) { faseT = 0; fase = (enemigo.hp <= 0) ? F_VICTORIA : F_ENE_AVANZA; }
+                else if (proyActivo) faseT = 0;
+            }
+            else if (fase == F_DEFENSA) {
+                if (faseT >= 20) { faseT = 0; fase = F_ENE_AVANZA; }
+            }
+            else if (fase == F_ENE_AVANZA) {
+                eneOffX = -130.0f * suave(faseT / (float)FR_ENE_AVANCE);
+                if (faseT >= FR_ENE_AVANCE) {
+                    faseT = 0; fase = F_ENE_GOLPE;
                     int dmgBruto = enemigo.atk - jugador.def + (rand() % 4);
                     if (dmgBruto < 1) dmgBruto = 1;
-
-                    // Aplicar reducción del 30% si está defendiendo (multiplicar por 0.7)
                     int dmgFinal = dmgBruto;
                     if (jugador.defendiendo) {
                         dmgFinal = (int)(dmgBruto * 0.70f);
                         if (dmgFinal < 1) dmgFinal = 1;
                     }
-
                     jugador.hp -= dmgFinal;
-
+                    if (jugador.hp < 0) jugador.hp = 0;
+                    lanzarFx(FX_GARRA_0, 2, 5, JUG_X + 14, JUG_Y - 60, 0.0f);
+                    lanzarNumero(dmgFinal, JUG_X + 56, JUG_Y - 146, jugador.defendiendo ? C2D_Color32(140, 230, 255, 255) : C2D_Color32(255, 110, 100, 255));
+                    if (jugador.defendiendo) {
+                        jugRetroceso = -4.0f;
+                        lanzarFx(FX_IMPACTO_0, 3, 3, JUG_X + 46, JUG_Y - 64, 0.0f);
+                        snprintf(logLinea2, sizeof(logLinea2), "%s ataca: ¡Bloqueas! Recibes %d DMG.", enemigo.nombre, dmgFinal);
+                    } else {
+                        jugRetroceso = -14.0f; jugFlash = 12;
+                        snprintf(logLinea2, sizeof(logLinea2), "¡%s contraataca! Recibes %d DMG.", enemigo.nombre, dmgFinal);
+                    }
+                }
+            }
+            else if (fase == F_ENE_GOLPE) {
+                if (faseT >= FR_ENE_GOLPE) { faseT = 0; fase = F_ENE_REGRESA; }
+            }
+            else if (fase == F_ENE_REGRESA) {
+                eneOffX = -130.0f * (1.0f - suave(faseT / (float)FR_ENE_AVANCE));
+                if (faseT >= FR_ENE_AVANCE) {
+                    eneOffX = 0; faseT = 0;
                     if (jugador.hp <= 0) {
-                        jugador.hp = jugador.maxHp;
-                        estado = ESTADO_EXPLORACION;
+                        fase = F_DERROTA;
                         snprintf(logLinea1, sizeof(logLinea1), "Has sido derrotado...");
                         snprintf(logLinea2, sizeof(logLinea2), "Te recuperas en la zona segura.");
-                    } else {
-                        if (jugador.defendiendo) {
-                            snprintf(logLinea2, sizeof(logLinea2), "%s ataca: ¡Bloqueas! Recibes %d DMG.", enemigo.nombre, dmgFinal);
-                        } else {
-                            snprintf(logLinea2, sizeof(logLinea2), "¡%s contraataca! Recibes %d DMG.", enemigo.nombre, dmgFinal);
-                        }
-                    }
+                    } else fase = F_MENU;
+                }
+            }
+            else if (fase == F_VICTORIA) {
+                if (faseT == 1) {
+                    snprintf(logLinea1, sizeof(logLinea1), "¡Victoria! Derrotaste al %s.", enemigo.nombre);
+                    snprintf(logLinea2, sizeof(logLinea2), "Explora el mapa para buscar mas combates.");
+                }
+                if (faseT % 18 == 10 && faseT > 30 && faseT < 110)
+                    lanzarFx(FX_BRILLO_0, 3, 6, JUG_X - 30 + (rand() % 60), JUG_Y - 40 - (rand() % 80), 0.0f);
+                if (faseT >= FR_VICTORIA) { estado = ESTADO_EXPLORACION; fase = F_MENU; }
+            }
+            else if (fase == F_DERROTA) {
+                if (faseT >= FR_DERROTA) {
+                    jugador.hp = jugador.maxHp;
+                    estado = ESTADO_EXPLORACION;
+                    fase = F_MENU;
+                }
+            }
+
+            // Proyectil (flecha de H'aanit / orbe de Cyrus)
+            if (proyActivo) {
+                proyX += (estilo == EST_FLECHA) ? 9.0f : 6.0f;
+                if (proyX >= eneCX - 18) {
+                    proyActivo = false;
+                    golpearEnemigo(&enemigo, danioPend, eneCX - 10, proyY);
+                    if (estilo == EST_ORBE) lanzarFx(FX_LUZ_1, 3, 4, eneCX - 6, proyY, 0.0f);
+                    snprintf(logLinea1, sizeof(logLinea1), "¡Atacas al %s! Causas %d DMG.", enemigo.nombre, danioPend);
                 }
             }
         }
@@ -727,31 +978,76 @@ int main(int argc, char* argv[]) {
 #endif
         } else {
             C2D_TargetClear(top, clrArena);
-            // Jugador: viajero elegido a 2x, de perfil mirando al enemigo
+            C2D_SetTintMode(C2D_TintSolid);
+            float jx = JUG_X + jugOffX + jugRetroceso;
+            // Jugador: viajero elegido a 2x, de perfil mirando al enemigo, animado segun la fase
             if (heroe >= 0) {
-                dibujarSombra(92.0f, 196.0f, HEROES[heroe].anchoCuerpo * 2.0f, C2D_Color32(30, 20, 38, 255));
-                dibujarHeroe(hojaHeroes, heroe, HDIR_DER, 0, 92.0f, 196.0f, 2.0f);
-                dibujarTextoCentrado(dynamicBuf, 92.0f, 46.0f, 0.5f, clrBlanco, jugador.nombre);
+                int c = CC_IDLE + (contadorAnim / 12) % 4;
+                switch (fase) {
+                    case F_AVANZA:   c = CC_ATAQUE; break;
+                    case F_ATACA:    c = CC_ATAQUE + cuadroAtaque(faseT); break;
+                    case F_PROYECTIL: c = (faseT < 8 || proyActivo) ? CC_ATAQUE + 5 : c; break;
+                    case F_DEFENSA:  c = CC_DEFENSA + (faseT < 6 ? 0 : 1); break;
+                    case F_ENE_AVANZA: case F_ENE_REGRESA:
+                        if (jugador.defendiendo) c = CC_DEFENSA + 1;
+                        else if (fase == F_ENE_REGRESA && faseT < 6) c = CC_HERIDO + 1;
+                        break;
+                    case F_ENE_GOLPE:
+                        c = jugador.defendiendo ? CC_DEFENSA + 1 : CC_HERIDO + (faseT < 9 ? 0 : 1);
+                        if (jugador.hp <= 0 && faseT > 9) c = CC_KO;
+                        break;
+                    case F_VICTORIA: c = (faseT < 24) ? c : CC_VICTORIA + ((faseT - 24) / 20) % 2; break;
+                    case F_DERROTA:  c = (faseT < 26) ? CC_KO : CC_KO + 1; break;
+                    default: break;
+                }
+                if (fase == F_ENE_REGRESA && jugador.hp <= 0) c = CC_KO;
+                dibujarSombra(jx, JUG_Y, HEROES[heroe].anchoCuerpo * 2.0f, C2D_Color32(30, 20, 38, 255));
+                C2D_ImageTint tinte;
+                bool destello = (jugFlash > 0 && (jugFlash / 2) % 2 == 0);
+                C2D_PlainImageTint(&tinte, destello ? C2D_Color32(255, 255, 255, 255) : C2D_Color32(255, 70, 70, 255), destello ? 0.85f : 0.35f);
+                dibujarHeroeCombate(hojasCombate[heroe], heroe, c, jx, JUG_Y, ESCALA_COMBATE, jugFlash > 0 ? &tinte : NULL);
+                dibujarTextoCentrado(dynamicBuf, JUG_X, 46.0f, 0.5f, clrBlanco, jugador.nombre);
             }
 #if USAR_PERSONALIZACION
             else {
-                C2D_DrawEllipseSolid(70.0f, 150.0f, 0.0f, 44.0f, 10.0f, C2D_Color32(30, 20, 38, 255));
-                dibujarPersonaje(hojaPJ, &apariencia, DIR_E, CUADRO_QUIETO, 60.0f, 96.0f, 2.0f);
+                C2D_DrawEllipseSolid(70.0f + jugOffX, 150.0f, 0.0f, 44.0f, 10.0f, C2D_Color32(30, 20, 38, 255));
+                dibujarPersonaje(hojaPJ, &apariencia, DIR_E, CUADRO_QUIETO, 60.0f + jx - JUG_X, 96.0f, 2.0f);
             }
 #endif
-            if (jugador.defendiendo) {
-                // Escudo visual celeste cuando se defiende
-                C2D_DrawRectSolid(140.0f, 110.0f, 0.0f, 6.0f, 60.0f, C2D_Color32(100, 240, 255, 255));
+            if (jugador.defendiendo && fase >= F_DEFENSA && fase <= F_ENE_REGRESA) {
+                // Escudo de luz celeste delante del viajero
+                dibujarImagenCentrada(hojaFx, FX_ESCUDO_0 + (contadorAnim / 6) % 2, jx + 44.0f, JUG_Y - 62.0f, ESCALA_COMBATE);
             }
 
-            // Enemigo + Barra de vida superior
-            C2D_DrawRectSolid(275.0f, 95.0f, 0.0f, 55.0f, 55.0f, clrEnemigo);
-            C2D_DrawRectSolid(270.0f, 78.0f, 0.0f, 65.0f, 7.0f, clrVidaBg);
-            C2D_DrawRectSolid(270.0f, 78.0f, 0.0f, 65.0f * ((float)enemigo.hp / enemigo.maxHp), 7.0f, clrVida);
+            // Enemigo (cuadro rojo provisional): embestida, temblor, destello y desvanecido al morir
+            int alfa = 255;
+            if (fase == F_VICTORIA) alfa = (faseT >= 30) ? 0 : 255 - faseT * 255 / 30;
+            if (alfa > 0) {
+                float tx = (eneTemblor > 0) ? ((eneTemblor % 4 < 2) ? 3.0f : -3.0f) : 0.0f;
+                float ex = ENE_X + eneOffX + tx;
+                float salto = (fase == F_ENE_AVANZA) ? -sinf(suave(faseT / (float)FR_ENE_AVANCE) * 3.14159f) * 18.0f : 0.0f;
+                C2D_DrawEllipseSolid(ENE_X + eneOffX - 4.0f, ENE_Y + ENE_TAM - 5.0f, 0.0f, ENE_TAM + 8.0f, 12.0f, C2D_Color32(30, 20, 38, alfa));
+                u32 cuerpo = (eneFlash > 0 && (eneFlash / 2) % 2 == 0) ? C2D_Color32(255, 255, 255, alfa) : C2D_Color32(220, 50, 50, alfa);
+                C2D_DrawRectSolid(ex, ENE_Y + salto, 0.0f, ENE_TAM, ENE_TAM, cuerpo);
+                u32 ojo = C2D_Color32(255, 230, 120, alfa);
+                C2D_DrawRectSolid(ex + 9.0f, ENE_Y + salto + 16.0f, 0.0f, 8.0f, 6.0f, ojo);
+                C2D_DrawRectSolid(ex + 24.0f, ENE_Y + salto + 16.0f, 0.0f, 8.0f, 6.0f, ojo);
+                C2D_DrawRectSolid(270.0f, 78.0f, 0.0f, 65.0f, 7.0f, clrVidaBg);
+                C2D_DrawRectSolid(270.0f, 78.0f, 0.0f, 65.0f * ((float)enemigo.hp / enemigo.maxHp), 7.0f, clrVida);
+                char infoEnemigo[32];
+                snprintf(infoEnemigo, sizeof(infoEnemigo), "%s (%d/%d)", enemigo.nombre, enemigo.hp, enemigo.maxHp);
+                dibujarTexto(dynamicBuf, 255.0f, 58.0f, 0.45f, clrBlanco, infoEnemigo);
+            }
 
-            char infoEnemigo[32];
-            snprintf(infoEnemigo, sizeof(infoEnemigo), "%s (%d/%d)", enemigo.nombre, enemigo.hp, enemigo.maxHp);
-            dibujarTexto(dynamicBuf, 255.0f, 58.0f, 0.45f, clrBlanco, infoEnemigo);
+            // Proyectil + efectos + numeros
+            if (proyActivo) {
+                if (heroe >= 0 && ESTILO_HEROE[heroe] == EST_ORBE)
+                    dibujarImagenCentrada(hojaFx, FX_ORBE_0 + (contadorAnim / 4) % 2, proyX, proyY, ESCALA_COMBATE);
+                else
+                    dibujarImagenCentrada(hojaFx, FX_FLECHA, proyX, proyY, ESCALA_COMBATE);
+            }
+            dibujarFx(hojaFx);
+            dibujarNumeros(dynamicBuf);
         }
 
         // --- 2. PANTALLA INFERIOR (UI Estilizada 320x240) ---
@@ -846,7 +1142,7 @@ int main(int argc, char* argv[]) {
         if (estado == ESTADO_COMBATE) {
             for (int i = 0; i < 3; i++) {
                 float btnY = 126.0f + (i * 35.0f);
-                bool seleccionado = (opcionMenu == i);
+                bool seleccionado = (opcionMenu == i) && fase == F_MENU;
 
                 // Borde brillante y color rojo si está seleccionado
                 u32 colorBorde = seleccionado ? clrBlanco : clrUIBorde;
@@ -867,7 +1163,7 @@ int main(int argc, char* argv[]) {
             C2D_DrawRectSolid(20.0f, 135.0f, 0.0f, 280.0f, 80.0f, clrUIPanel);
             dibujarTexto(dynamicBuf, 65.0f, 155.0f, 0.52f, clrBlanco, "[ MODO EXPLORACION ]");
             dibujarTexto(dynamicBuf, 45.0f, 178.0f, 0.42f, clrGris, "Presiona START para salir al HBL");
-            dibujarTexto(dynamicBuf, 45.0f, 194.0f, 0.42f, clrGris, "SELECT: cambiar de viajero");
+            dibujarTexto(dynamicBuf, 45.0f, 194.0f, 0.42f, clrGris, "SELECT: cambiar de viajero   Y: combate");
         }
 
         C3D_FrameEnd(0);
@@ -876,6 +1172,8 @@ int main(int argc, char* argv[]) {
     // Liberar recursos al salir
     C2D_TextBufDelete(dynamicBuf);
     C2D_SpriteSheetFree(hojaHeroes);
+    for (int i = 0; i < NUM_HEROES; i++) C2D_SpriteSheetFree(hojasCombate[i]);
+    C2D_SpriteSheetFree(hojaFx);
 #if USAR_PERSONALIZACION
     C2D_SpriteSheetFree(hojaPJ);
 #endif
